@@ -1,20 +1,169 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function Home() {
-  const [signal, setSignal] = useState("LONG");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
-  const changeSignal = () => {
-    if (signal === "LONG") setSignal("SHORT");
-    else if (signal === "SHORT") setSignal("WAIT");
-    else setSignal("LONG");
-  };
+  async function loadData() {
+    try {
+      setLoading(true);
+
+      const response = await fetch("/api/btc", {
+        cache: "no-store",
+      });
+
+      const result = await response.json();
+
+      if (!result.success || !result.candles?.length) {
+        throw new Error("No BTC data received");
+      }
+
+      const candles = result.candles;
+
+      // Delta returns newest candle first
+      const latest = candles[0];
+      const previous = candles[1];
+
+      const closes = candles.map((c) => Number(c.close));
+      const volumes = candles.map((c) => Number(c.volume));
+
+      const ema20 = calculateEMA(closes, 20);
+      const ema50 = calculateEMA(closes, 50);
+      const rsi = calculateRSI(closes, 14);
+
+      const macd = calculateMACD(closes);
+
+      const price = Number(latest.close);
+      const previousPrice = Number(previous.close);
+
+      const priceChange =
+        ((price - previousPrice) / previousPrice) * 100;
+
+      const currentVolume = Number(latest.volume);
+      const averageVolume =
+        volumes.slice(1, 21).reduce((a, b) => a + b, 0) /
+        Math.min(20, volumes.length - 1);
+
+      const volumeStrong = currentVolume > averageVolume;
+
+      let score = 50;
+
+      // EMA
+      if (ema20 > ema50) {
+        score += 15;
+      } else {
+        score -= 15;
+      }
+
+      // RSI
+      if (rsi > 50 && rsi < 70) {
+        score += 10;
+      } else if (rsi < 50 && rsi > 30) {
+        score -= 10;
+      }
+
+      // MACD
+      if (macd.macd > macd.signal) {
+        score += 10;
+      } else {
+        score -= 10;
+      }
+
+      // Price direction
+      if (price > previousPrice) {
+        score += 5;
+      } else {
+        score -= 5;
+      }
+
+      // Volume
+      if (volumeStrong) {
+        score += price > previousPrice ? 5 : -5;
+      }
+
+      score = Math.max(0, Math.min(100, Math.round(score)));
+
+      let signal = "WAIT";
+
+      if (score >= 65) {
+        signal = "LONG";
+      } else if (score <= 35) {
+        signal = "SHORT";
+      }
+
+      const confidence = Math.max(
+        50,
+        Math.abs(score - 50) * 2 + 50
+      );
+
+      setData({
+        price,
+        priceChange,
+        rsi,
+        ema20,
+        ema50,
+        macd,
+        volume: currentVolume,
+        averageVolume,
+        volumeStrong,
+        signal,
+        score,
+        confidence: Math.min(99, Math.round(confidence)),
+        candle: latest,
+        updated: new Date(),
+      });
+
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadData();
+
+    const interval = setInterval(loadData, 60000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  if (loading && !data) {
+    return (
+      <main style={styles.page}>
+        <div style={styles.loading}>
+          Loading BTC market data...
+        </div>
+      </main>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <main style={styles.page}>
+        <div style={styles.loading}>
+          <h2>Unable to load BTC data</h2>
+          <p>{error}</p>
+
+          <button
+            onClick={loadData}
+            style={styles.button}
+          >
+            Try Again
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   const signalColor =
-    signal === "LONG"
+    data.signal === "LONG"
       ? "#22c55e"
-      : signal === "SHORT"
+      : data.signal === "SHORT"
       ? "#ef4444"
       : "#f59e0b";
 
@@ -22,11 +171,16 @@ export default function Home() {
     <main style={styles.page}>
       <div style={styles.container}>
 
-        {/* Header */}
+        {/* HEADER */}
         <header style={styles.header}>
           <div>
-            <div style={styles.exchange}>DELTA EXCHANGE</div>
-            <h1 style={styles.title}>BTCUSD</h1>
+            <div style={styles.exchange}>
+              DELTA EXCHANGE
+            </div>
+
+            <h1 style={styles.title}>
+              BTCUSD
+            </h1>
           </div>
 
           <div style={styles.live}>
@@ -35,11 +189,25 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Price */}
+        {/* PRICE */}
         <section style={styles.priceBox}>
           <div>
-            <div style={styles.price}>$115,250</div>
-            <div style={styles.positive}>+1.24% today</div>
+            <div style={styles.price}>
+              ${formatPrice(data.price)}
+            </div>
+
+            <div
+              style={{
+                ...styles.positive,
+                color:
+                  data.priceChange >= 0
+                    ? "#22c55e"
+                    : "#ef4444",
+              }}
+            >
+              {data.priceChange >= 0 ? "+" : ""}
+              {data.priceChange.toFixed(3)}% from previous 30M
+            </div>
           </div>
 
           <div style={styles.timeframe}>
@@ -47,7 +215,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Main Signal */}
+        {/* SIGNAL */}
         <section style={styles.signalCard}>
           <div style={styles.smallTitle}>
             BTC 30 MIN SIGNAL
@@ -59,7 +227,7 @@ export default function Home() {
               color: signalColor,
             }}
           >
-            {signal}
+            {data.signal}
           </div>
 
           <div style={styles.confidenceText}>
@@ -67,121 +235,189 @@ export default function Home() {
           </div>
 
           <div style={styles.confidence}>
-            78%
+            {data.confidence}%
           </div>
 
           <div style={styles.progressBackground}>
             <div
               style={{
                 ...styles.progress,
-                width: "78%",
+                width: `${data.confidence}%`,
                 background: signalColor,
               }}
-            ></div>
+            />
+          </div>
+
+          <div style={styles.score}>
+            Score: {data.score}/100
           </div>
         </section>
 
-        {/* Trade Levels */}
+        {/* TRADE LEVELS */}
         <section style={styles.grid}>
-          <div style={styles.box}>
-            <div style={styles.label}>ENTRY</div>
-            <div style={styles.value}>$115,250</div>
-          </div>
 
           <div style={styles.box}>
-            <div style={styles.label}>STOP LOSS</div>
-            <div style={{ ...styles.value, color: "#ef4444" }}>
-              $114,700
+            <div style={styles.label}>
+              CURRENT
+            </div>
+
+            <div style={styles.value}>
+              ${formatPrice(data.price)}
             </div>
           </div>
 
           <div style={styles.box}>
-            <div style={styles.label}>TARGET</div>
-            <div style={{ ...styles.value, color: "#22c55e" }}>
-              $116,300
+            <div style={styles.label}>
+              30M HIGH
+            </div>
+
+            <div
+              style={{
+                ...styles.value,
+                color: "#22c55e",
+              }}
+            >
+              ${formatPrice(data.candle.high)}
             </div>
           </div>
+
+          <div style={styles.box}>
+            <div style={styles.label}>
+              30M LOW
+            </div>
+
+            <div
+              style={{
+                ...styles.value,
+                color: "#ef4444",
+              }}
+            >
+              ${formatPrice(data.candle.low)}
+            </div>
+          </div>
+
         </section>
 
-        {/* Analysis */}
+        {/* ANALYSIS */}
         <section style={styles.card}>
+
           <div style={styles.cardTitle}>
             Market Analysis
           </div>
 
           <AnalysisRow
             name="RSI"
-            value="61.2"
-            status="Bullish"
-            good
-          />
-
-          <AnalysisRow
-            name="MACD"
-            value="Bullish"
-            status="BUY"
-            good
+            value={data.rsi.toFixed(2)}
+            status={
+              data.rsi >= 50
+                ? "Bullish"
+                : "Bearish"
+            }
+            good={data.rsi >= 50}
           />
 
           <AnalysisRow
             name="EMA 20 / 50"
-            value="Bullish"
-            status="UP"
-            good
+            value={
+              data.ema20 > data.ema50
+                ? "EMA20 > EMA50"
+                : "EMA20 < EMA50"
+            }
+            status={
+              data.ema20 > data.ema50
+                ? "BULL"
+                : "BEAR"
+            }
+            good={data.ema20 > data.ema50}
+          />
+
+          <AnalysisRow
+            name="MACD"
+            value={data.macd.macd.toFixed(2)}
+            status={
+              data.macd.macd > data.macd.signal
+                ? "Bullish"
+                : "Bearish"
+            }
+            good={
+              data.macd.macd >
+              data.macd.signal
+            }
           />
 
           <AnalysisRow
             name="Volume"
-            value="Strong"
-            status="+32%"
-            good
+            value={
+              data.volumeStrong
+                ? "Above Average"
+                : "Normal"
+            }
+            status={
+              data.volumeStrong
+                ? "STRONG"
+                : "NORMAL"
+            }
+            good={data.volumeStrong}
           />
 
-          <AnalysisRow
-            name="Market Trend"
-            value="Uptrend"
-            status="BULL"
-            good
-          />
         </section>
 
-        {/* Why signal */}
+        {/* WHY */}
         <section style={styles.card}>
+
           <div style={styles.cardTitle}>
-            Why this signal?
+            Signal Explanation
           </div>
 
-          <div style={styles.reason}>
-            <span style={styles.check}>✓</span>
-            EMA 20 is above EMA 50
-          </div>
+          <Reason
+            good={data.ema20 > data.ema50}
+            text="EMA 20 / 50 trend"
+          />
 
-          <div style={styles.reason}>
-            <span style={styles.check}>✓</span>
-            RSI is above 50
-          </div>
+          <Reason
+            good={data.rsi >= 50}
+            text="RSI momentum"
+          />
 
-          <div style={styles.reason}>
-            <span style={styles.check}>✓</span>
-            MACD shows bullish momentum
-          </div>
+          <Reason
+            good={
+              data.macd.macd >
+              data.macd.signal
+            }
+            text="MACD momentum"
+          />
 
-          <div style={styles.reason}>
-            <span style={styles.check}>✓</span>
-            Trading volume is increasing
-          </div>
+          <Reason
+            good={data.price > data.candle.open}
+            text="Current 30M candle direction"
+          />
+
+          <Reason
+            good={data.volumeStrong}
+            text="Trading volume"
+          />
+
         </section>
 
-        {/* Refresh */}
+        {/* REFRESH */}
         <button
-          onClick={changeSignal}
+          onClick={loadData}
           style={styles.button}
+          disabled={loading}
         >
-          ↻ Refresh Signal
+          {loading
+            ? "Updating..."
+            : "↻ Refresh Market Data"}
         </button>
 
+        <div style={styles.updated}>
+          Last updated:{" "}
+          {data.updated.toLocaleTimeString()}
+        </div>
+
         <div style={styles.disclaimer}>
-          Demo signal only. This is not financial advice.
+          Signals are algorithmic estimates only.
+          Not financial advice.
         </div>
 
       </div>
@@ -189,28 +425,220 @@ export default function Home() {
   );
 }
 
-function AnalysisRow({ name, value, status, good }) {
+
+/* =========================
+   INDICATORS
+========================= */
+
+function calculateEMA(values, period) {
+  if (values.length < period) {
+    return values[0];
+  }
+
+  const multiplier =
+    2 / (period + 1);
+
+  let ema =
+    values
+      .slice(0, period)
+      .reduce((a, b) => a + b, 0) /
+    period;
+
+  for (let i = period; i < values.length; i++) {
+    ema =
+      (values[i] - ema) *
+        multiplier +
+      ema;
+  }
+
+  return ema;
+}
+
+
+function calculateRSI(values, period) {
+  if (values.length <= period) {
+    return 50;
+  }
+
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const difference =
+      values[i] - values[i - 1];
+
+    if (difference >= 0) {
+      gains += difference;
+    } else {
+      losses += Math.abs(difference);
+    }
+  }
+
+  let averageGain =
+    gains / period;
+
+  let averageLoss =
+    losses / period;
+
+  for (
+    let i = period + 1;
+    i < values.length;
+    i++
+  ) {
+    const difference =
+      values[i] - values[i - 1];
+
+    const gain =
+      difference > 0
+        ? difference
+        : 0;
+
+    const loss =
+      difference < 0
+        ? Math.abs(difference)
+        : 0;
+
+    averageGain =
+      (averageGain * (period - 1) +
+        gain) /
+      period;
+
+    averageLoss =
+      (averageLoss * (period - 1) +
+        loss) /
+      period;
+  }
+
+  if (averageLoss === 0) {
+    return 100;
+  }
+
+  const rs =
+    averageGain / averageLoss;
+
+  return 100 - 100 / (1 + rs);
+}
+
+
+function calculateMACD(values) {
+  const ema12 = calculateEMA(
+    values,
+    12
+  );
+
+  const ema26 = calculateEMA(
+    values,
+    26
+  );
+
+  const macd =
+    ema12 - ema26;
+
+  // Simple signal approximation
+  const signal =
+    calculateEMA(
+      values.map(
+        (_, index) =>
+          calculateEMA(
+            values.slice(
+              0,
+              index + 1
+            ),
+            12
+          ) -
+          calculateEMA(
+            values.slice(
+              0,
+              index + 1
+            ),
+            26
+          )
+      ),
+      9
+    );
+
+  return {
+    macd,
+    signal,
+  };
+}
+
+
+/* =========================
+   COMPONENTS
+========================= */
+
+function AnalysisRow({
+  name,
+  value,
+  status,
+  good,
+}) {
   return (
     <div style={styles.analysisRow}>
+
       <div>
-        <div style={styles.analysisName}>{name}</div>
-        <div style={styles.analysisValue}>{value}</div>
+        <div style={styles.analysisName}>
+          {name}
+        </div>
+
+        <div style={styles.analysisValue}>
+          {value}
+        </div>
       </div>
 
       <div
         style={{
           ...styles.badge,
-          color: good ? "#22c55e" : "#f59e0b",
+          color: good
+            ? "#22c55e"
+            : "#ef4444",
           background: good
             ? "rgba(34,197,94,0.10)"
-            : "rgba(245,158,11,0.10)",
+            : "rgba(239,68,68,0.10)",
         }}
       >
         ● {status}
       </div>
+
     </div>
   );
 }
+
+
+function Reason({ good, text }) {
+  return (
+    <div style={styles.reason}>
+      <span
+        style={{
+          ...styles.check,
+          color: good
+            ? "#22c55e"
+            : "#ef4444",
+        }}
+      >
+        {good ? "✓" : "×"}
+      </span>
+
+      {text}
+    </div>
+  );
+}
+
+
+function formatPrice(value) {
+  return Number(value).toLocaleString(
+    "en-US",
+    {
+      maximumFractionDigits: 2,
+    }
+  );
+}
+
+
+/* =========================
+   STYLES
+========================= */
 
 const styles = {
   page: {
@@ -227,6 +655,16 @@ const styles = {
     width: "100%",
     maxWidth: "720px",
     margin: "0 auto",
+  },
+
+  loading: {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    color: "#ffffff",
+    textAlign: "center",
   },
 
   header: {
@@ -247,7 +685,6 @@ const styles = {
     margin: 0,
     fontSize: "30px",
     fontWeight: "800",
-    letterSpacing: "-1px",
   },
 
   live: {
@@ -267,7 +704,6 @@ const styles = {
     height: "7px",
     borderRadius: "50%",
     background: "#22c55e",
-    display: "inline-block",
   },
 
   priceBox: {
@@ -284,11 +720,9 @@ const styles = {
   price: {
     fontSize: "32px",
     fontWeight: "800",
-    letterSpacing: "-1px",
   },
 
   positive: {
-    color: "#22c55e",
     fontSize: "13px",
     marginTop: "5px",
   },
@@ -304,7 +738,7 @@ const styles = {
 
   signalCard: {
     background:
-      "linear-gradient(145deg, #111720, #0c1016)",
+      "linear-gradient(145deg,#111720,#0c1016)",
     border: "1px solid #202734",
     borderRadius: "22px",
     padding: "28px 20px",
@@ -323,7 +757,6 @@ const styles = {
     fontSize: "52px",
     fontWeight: "900",
     margin: "8px 0",
-    letterSpacing: "-2px",
   },
 
   confidenceText: {
@@ -350,10 +783,16 @@ const styles = {
     borderRadius: "20px",
   },
 
+  score: {
+    marginTop: "12px",
+    color: "#737b8c",
+    fontSize: "11px",
+  },
+
   grid: {
     display: "grid",
     gridTemplateColumns:
-      "repeat(3, minmax(0, 1fr))",
+      "repeat(3,minmax(0,1fr))",
     gap: "10px",
     marginBottom: "14px",
   },
@@ -374,7 +813,7 @@ const styles = {
   },
 
   value: {
-    fontSize: "14px",
+    fontSize: "13px",
     fontWeight: "800",
   },
 
@@ -397,7 +836,8 @@ const styles = {
     justifyContent: "space-between",
     alignItems: "center",
     padding: "13px 0",
-    borderBottom: "1px solid #1b2029",
+    borderBottom:
+      "1px solid #1b2029",
   },
 
   analysisName: {
@@ -426,7 +866,6 @@ const styles = {
   },
 
   check: {
-    color: "#22c55e",
     fontWeight: "900",
     marginRight: "9px",
   },
@@ -443,10 +882,17 @@ const styles = {
     cursor: "pointer",
   },
 
+  updated: {
+    textAlign: "center",
+    color: "#687180",
+    fontSize: "10px",
+    marginTop: "14px",
+  },
+
   disclaimer: {
     textAlign: "center",
     color: "#555d6b",
     fontSize: "10px",
-    marginTop: "16px",
+    marginTop: "8px",
   },
 };
